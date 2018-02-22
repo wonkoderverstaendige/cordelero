@@ -1,19 +1,5 @@
 /*********************************************************************
-This is an example for our Monochrome OLEDs based on SSD1306 drivers
-
-  Pick one up today in the adafruit shop!
-  ------> http://www.adafruit.com/category/63_98
-
-This example is for a 128x64 size display using I2C to communicate
-3 pins are required to interface (2 I2C and one reset)
-
-Adafruit invests time and resources providing this open source code, 
-please support Adafruit and open-source hardware by purchasing 
-products from Adafruit!
-
-Written by Limor Fried/Ladyada  for Adafruit Industries.  
-BSD license, check license.txt for more information
-All text above, and the splash screen must be included in any redistribution
+CORDELERO - Twisting Tetrodes Like Its 1853!
 *********************************************************************/
 
 #include <SPI.h>
@@ -24,6 +10,7 @@ All text above, and the splash screen must be included in any redistribution
 #include <TimerOne.h>
 #include <Encoder.h>
 
+#define DEBUG
 // OLED
 #if (SSD1306_LCDHEIGHT != 64)
   #error("Height incorrect, please fix Adafruit_SSD1306.h!");
@@ -49,23 +36,29 @@ long enc_position = 0;
 long stepperSpeed = 1750L;
 long stepperAccel = 5000L;
 
-long turns_forward = 80;
-long turns_reverse = 40;
-long turns_current = 0;
+// start conditions
+uint16_t turns_forward = 20;
+uint16_t turns_reverse = 11;
+uint16_t turns_current = 0;
 
-long steps_forward = (turns_forward * TURNSTEPS) / GEAR_RATIO; // small gear turns * steps/turn / gearing 
-long steps_reverse = (turns_reverse * TURNSTEPS) / GEAR_RATIO;
+long steps_forward; // small gear turns * steps/turn / gearing 
+long steps_reverse;
 
 enum MotorState {
   FAULT,
-  HALT,
+  MENU,
   DONE,
   FORWARD,
   REVERSE
 };
 
-MotorState motor_state = HALT;
+MotorState motor_state = MENU;
 AccelStepper stepper(AccelStepper::HALF4WIRE, In1, In3, In2, In4); // note order of pins! 1, 3, 2, 4
+
+// MENU ITEMS
+byte menu_selection = 0;
+byte menu_num_items = 3;
+bool menu_editing = false;
 
 
 void setup()   {                
@@ -96,7 +89,7 @@ void setup()   {
 }
 
 void loop() {
-    if (enc_switch) process_events();
+    process_events();
     update_pos_display();
 
     // End of Motor travel
@@ -111,11 +104,14 @@ void loop() {
 }
 
 void reverse() {
+  stepper.setCurrentPosition(0);
+  stepper.moveTo(0);
+  update_pos_display();
+  delay(300);
+  
+  steps_reverse = turns_to_steps(turns_reverse);
   motor_state = REVERSE;
   turns_current = turns_reverse;
-  stepper.setCurrentPosition(0);
-  update_pos_display();
-  delay(500);
   stepper.move(-steps_reverse);
 }
 
@@ -126,6 +122,7 @@ void stop_turning() {
 }
 
 void start_turning() {
+  steps_forward = turns_to_steps(turns_forward);
   motor_state = FORWARD;
   stepper.setCurrentPosition(0);
   stepper.enableOutputs();
@@ -134,7 +131,8 @@ void start_turning() {
 }
 
 void halt() {
-  motor_state = HALT;
+  motor_state = MENU;
+  menu_selection = 0;
 }
 
 void toggle() {
@@ -147,10 +145,45 @@ void take_step() {
 
 void process_events() {
   if (enc_switch) {
-    if (motor_state == DONE) {
-      halt();
-    } else if (motor_state == HALT) {
-      start_turning();
+    switch (motor_state) {
+      case DONE:
+        halt();
+        break;
+      case MENU:
+        if (menu_selection == 0) {
+          start_turning();
+        } else {
+          menu_editing = !menu_editing;
+          if (menu_editing) {
+            encoder.write(0);
+          } else {
+            encoder.write(menu_selection * 4);
+          }
+        }
+        break;
+    }
+    enc_switch = false;
+    delay(100); // "debounce"
+  }
+
+  if (motor_state == MENU) {
+    if (!menu_editing) {
+      // TODO: Negative numbers... ugh.
+      menu_selection = encoder.read() / 4 % menu_num_items;
+    } else {
+      switch (menu_selection) {
+        case 1:
+          turns_forward += encoder.read() / 4;
+          if (turns_forward < 1) turns_forward = 1;
+          break;
+        case 2:
+          turns_reverse += encoder.read() / 4;
+          if (turns_reverse < 1) turns_reverse = 1;
+          break;
+      }
+      if (encoder.read() / 4) {
+        encoder.write(0);
+      }
     }
   }
 }
@@ -163,23 +196,33 @@ void update_pos_display() {
       display.print("ERROR!");
     }
 
-    if (motor_state == HALT) {
-      display.print("++ MENU ++");
+    if (motor_state == MENU) {
+      display.println("++ MENU ++");
       display.setCursor(0, 18);
-      display.println(" PRESS TO   START ");
-
-      display.setTextSize(1);
-      display.setCursor(0, 52);
-      display.print("Encoder: ");
-      display.print(encoder.read() / 4);
-      display.print(" T: ");
-      if (enc_switch) {
-        display.print("ON");
+      display.println("  Start "); //display.println(menu_selection);
+      
+      display.print("  Fwd: ");
+      if (menu_editing && menu_selection == 1){
+        display.setTextColor(BLACK, WHITE);
+        display.println(turns_forward);
+        display.setTextColor(WHITE);
       } else {
-        display.print("OFF");
+        display.println(turns_forward);
       }
 
-      display.setTextSize(2);
+
+      display.print("  Rev: ");
+      if (menu_editing && menu_selection == 2) {
+        display.setTextColor(BLACK, WHITE);
+        display.println(turns_reverse);
+        display.setTextColor(WHITE);
+      } else {
+        display.println(turns_reverse);
+      }
+      
+      // cursor
+      display.setCursor(0, 18 + menu_selection * 16);
+      display.print(">");
     }
 
     if (motor_state == DONE) {
@@ -203,11 +246,11 @@ void update_pos_display() {
       display.println(turns_current);
 
       // DEBUG OUTPUT
+#if defined DEBUG
       display.setTextSize(1);
       display.setCursor(0, 42);
       display.print("Steps left: ");
       display.println(stepper.distanceToGo());
-
       display.setCursor(0, 52);
       display.print("Encoder: ");
       display.print(encoder.read() / 4);
@@ -219,7 +262,12 @@ void update_pos_display() {
       }
 
       display.setTextSize(2);
+#endif
     }
     display.display();
+}
+
+long turns_to_steps(uint16_t turns) {
+  return long(turns) * TURNSTEPS / GEAR_RATIO;
 }
 
